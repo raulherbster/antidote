@@ -1,5 +1,5 @@
 noinst_LTLIBRARIES = libparser.la
-INCLUDES =  -I$(top_builddir) -I$(top_srcdir) -I$(top_builddir)/src -I$(top_srcdir)/src
+AM_CPPFLAGS =  -I$(top_builddir) -I$(top_srcdir) -I$(top_builddir)/src -I$(top_srcdir)/src
 
 libparser_la_SOURCES = decoder_ASN1.c \
                       struct_cleaner.c \

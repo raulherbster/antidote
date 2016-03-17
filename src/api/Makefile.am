@@ -1,4 +1,4 @@
-INCLUDES =  -I$(top_builddir) -I$(top_srcdir) -I$(top_srcdir)/src -I$(top_builddir)/src
+AM_CPPFLAGS =  -I$(top_builddir) -I$(top_srcdir) -I$(top_srcdir)/src -I$(top_builddir)/src
 
 noinst_LTLIBRARIES = libapi.la
 
