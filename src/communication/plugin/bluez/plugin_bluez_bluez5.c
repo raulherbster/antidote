@@ -67,6 +67,11 @@ static DBusGProxy *manager = NULL;
 static char *current_data = NULL;
 static int data_len = 0;
 
+/**
+ * Bluez version
+ */
+//static unsigned int bluez_version = 5;
+
 typedef struct device_object {
 	char *path;
 	char *addr;
@@ -271,24 +276,24 @@ static char *get_device_addr(const char *path)
 	GHashTable *props;
 
 	proxy = dbus_g_proxy_new_for_name(conn, "org.bluez", path,
-					  "org.bluez.Device");
+			"org.freedesktop.DBus.Properties");
 
 	if (!proxy) {
-		ERROR("Can't get org.bluez.Device interface");
+		ERROR("Properties interface not found");
 		return g_strdup(path);
 	}
 
-
-	if (!dbus_g_proxy_call(proxy, "GetProperties",
+	if (!dbus_g_proxy_call(proxy, "GetAll",
 			       &error,
+				   G_TYPE_STRING, "org.bluez.Device1",
 			       G_TYPE_INVALID,
 			       dbus_g_type_get_map("GHashTable", G_TYPE_STRING, G_TYPE_VALUE),
 			       &props, G_TYPE_INVALID)) {
 		if (error) {
-			ERROR("Can't call device GetProperties: %s", error->message);
+			ERROR("Can't call GetAll() on org.freedesktop.DBus.Properties: %s", error->message);
 			g_error_free(error);
 		} else {
-			ERROR("Can't call device GetProperties, probably disconnected");
+			ERROR("Can't call GetAll() on org.freedesktop.DBus.Properties, probably disconnected");
 		}
 
 		return g_strdup(path);
@@ -458,7 +463,7 @@ static guint64 add_channel(const char *path, const char *device, int fd,
 	}
 
 	proxy = dbus_g_proxy_new_for_name(conn, "org.bluez", path,
-					  "org.bluez.HealthChannel");
+					  "org.bluez.HealthChannel1");
 
 	c = (channel_object *) g_new(channel_object, 1);
 	c->path = g_strdup(path);
@@ -567,7 +572,7 @@ static void channel_connected(DBusGProxy *proxy, const char *path, gpointer user
 	DBusError err;
 
 	msg = dbus_message_new_method_call("org.bluez", path,
-					   "org.bluez.HealthChannel", "Acquire");
+					   "org.bluez.HealthChannel1", "Acquire");
 
 	if (!msg) {
 		ERROR(" network:dbus Can't allocate new method call");
@@ -786,10 +791,10 @@ static void connect_device_signals(const char *device_path, const char *adapter_
 	}
 
 	proxy = dbus_g_proxy_new_for_name(conn, "org.bluez", device_path,
-					  "org.bluez.HealthDevice");
+					  "org.bluez.HealthDevice1");
 
 	if (!proxy) {
-		ERROR("%s not a HealthDevice", device_path);
+		ERROR("%s not a HealthDevice1", device_path);
 		return;
 	}
 
@@ -839,10 +844,10 @@ static void device_removed(DBusGProxy *proxy, const char *path, gpointer user_da
 static gboolean create_manager_proxy()
 {
 	manager = dbus_g_proxy_new_for_name(conn, "org.bluez", "/",
-					    "org.bluez.Manager");
+					    "org.freedesktop.DBus.ObjectManager");
 
 	if (!manager) {
-		ERROR("BlueZ manager service not found");
+		ERROR("BlueZ ObjectManager service not found");
 	}
 
 	return !!manager;
@@ -867,16 +872,13 @@ static void connect_adapter(const char *adapter)
 	/* Find devices and connect to ChannelConnected/Destroyed signals */
 
 	DBusGProxy *proxy;
-	GHashTable *props;
-	GValue *devlist;
+	GHashTable *managed_objects;
 	GError *error = NULL;
-	GPtrArray *array;
-	unsigned int i;
 
 	DEBUG("connecting adapter: %s", adapter);
 
 	proxy = dbus_g_proxy_new_for_name(conn, "org.bluez",
-					  adapter, "org.bluez.Adapter");
+					  adapter, "org.bluez.Adapter1");
 
 	if (!proxy) {
 		ERROR("Adapter interface not found");
@@ -899,36 +901,58 @@ static void connect_adapter(const char *adapter)
 				    G_CALLBACK(device_removed),
 				    NULL, NULL);
 
-	if (!dbus_g_proxy_call(proxy, "GetProperties", &error,
-			       G_TYPE_INVALID,
-			       dbus_g_type_get_map("GHashTable", G_TYPE_STRING, G_TYPE_VALUE),
-			       &props, G_TYPE_INVALID)) {
+	DEBUG("Getting known devices list");
+
+	if (!dbus_g_proxy_call(manager, "GetManagedObjects", &error,
+				G_TYPE_INVALID,
+					dbus_g_type_get_map("GHashTable", DBUS_TYPE_G_OBJECT_PATH,
+						dbus_g_type_get_map("GHashTable", G_TYPE_STRING,
+							dbus_g_type_get_map("GHashTable", G_TYPE_STRING, G_TYPE_VALUE))),
+					&managed_objects, G_TYPE_INVALID)) {
 		if (error) {
-			ERROR("Can't get device list: %s", error->message);
+			ERROR("Can't get managed objects list: %s", error->message);
 			g_error_free(error);
 		} else {
-			ERROR("Can't get device list, probably disconnected");
+			ERROR("Can't get managed objects list, probably disconnected");
 		}
 
 		return;
 	}
 
-	DEBUG("Getting known devices list");
+	/*
+	 * Search for Objects with Device1-Inferface and which belongs
+	 * to our current adapter
+	 */
 
-	devlist = g_hash_table_lookup(props, "Devices");
+	GHashTableIter iter;
+	gpointer key, value;
 
-	if (devlist) {
-		array = g_value_get_boxed(devlist);
+	g_hash_table_iter_init (&iter, managed_objects);
+	while (g_hash_table_iter_next (&iter, &key, &value))
+	{
+		char *c_key = (char *) key;
+		GHashTable *object = (GHashTable *) value;
+		GHashTable *device1 = g_hash_table_lookup(object, "org.bluez.Device1");
 
-		if (array)
-			for (i = 0; i < array->len; ++i)
-				connect_device_signals(g_ptr_array_index(array, i),
-						       adapter);
-	} else {
-		DEBUG("No Devices property in adapter properties");
+		if (device1)
+		{
+			GValue *gv = g_hash_table_lookup(device1, "Adapter");
+			char *adapter_name = g_value_get_boxed(gv);
+			//DEBUG("Adapter from device %s is %s", c_key, adapter_name);
+
+			if (strcmp(adapter, adapter_name) == 0)
+			{
+				DEBUG("Connecting signals for object %s and adapter %s", c_key, adapter_name);
+				connect_device_signals(c_key, adapter);
+			}
+
+			g_hash_table_destroy(device1);
+		}
+
+		g_hash_table_destroy(object);
 	}
 
-	g_hash_table_destroy(props);
+	g_hash_table_destroy(managed_objects);
 }
 
 
@@ -1018,7 +1042,7 @@ gboolean create_health_application(gboolean is_sink, guint16 data_type)
 	app_object *app;
 
 	msg = dbus_message_new_method_call("org.bluez", "/org/bluez",
-					   "org.bluez.HealthManager", "CreateApplication");
+					   "org.bluez.HealthManager1", "CreateApplication");
 
 	if (!msg) {
 		DEBUG(" network:dbus Can't allocate new method call");
@@ -1112,7 +1136,7 @@ static void destroy_health_applications()
 	DBusGProxy *proxy;
 
 	proxy = dbus_g_proxy_new_for_name(conn, "org.bluez",
-					  "/org/bluez", "org.bluez.HealthManager");
+					  "/org/bluez", "org.bluez.HealthManager1");
 
 	if (!proxy) {
 		ERROR("BlueZ health manager service not found");
@@ -1178,16 +1202,21 @@ gboolean plugin_bluez_update_data_types(gboolean is_sink, guint16 hdp_data_types
  */
 static void find_current_adapters()
 {
-	GHashTable *props;
+	GHashTable *managed_objects;
 	GError *error = NULL;
-	GValue *gv;
-	GPtrArray *array;
-	unsigned int i;
 
-	if (!dbus_g_proxy_call(manager, "GetProperties", &error,
-			       G_TYPE_INVALID,
-			       dbus_g_type_get_map("GHashTable", G_TYPE_STRING, G_TYPE_VALUE),
-			       &props, G_TYPE_INVALID)) {
+	/*
+	 * One of the most notable change in bluez5 is the removal
+	 * of the org.bluez.Manager interface. Therefore all available
+	 * adapter must be discovered by an ObjectManager.GetManagedObjects call with
+	 * subsequent filter on the returned object having an org.bluez.Adapter1 interface
+	 */
+	if (!dbus_g_proxy_call(manager, "GetManagedObjects", &error,
+				G_TYPE_INVALID,
+					dbus_g_type_get_map("GHashTable", DBUS_TYPE_G_OBJECT_PATH,
+						dbus_g_type_get_map("GHashTable", G_TYPE_STRING,
+							dbus_g_type_get_map("GHashTable", G_TYPE_STRING, G_TYPE_VALUE))),
+					&managed_objects, G_TYPE_INVALID)) {
 		if (error) {
 			ERROR("Can't get adapter list: %s", error->message);
 			g_error_free(error);
@@ -1198,19 +1227,26 @@ static void find_current_adapters()
 		return;
 	}
 
-	gv = g_hash_table_lookup(props, "Adapters");
+	GHashTableIter iter;
+	gpointer key, value;
 
-	if (gv) {
-		array = g_value_get_boxed(gv);
+	g_hash_table_iter_init (&iter, managed_objects);
+	while (g_hash_table_iter_next (&iter, &key, &value))
+	{
+		// Searching for object with Adapter1-Interface
+		GHashTable *object = (GHashTable *) value;
+		GHashTable *adapter1 = g_hash_table_lookup(object, "org.bluez.Adapter1");
 
-		if (array)
-			for (i = 0; i < array->len; ++i)
-				connect_adapter(g_ptr_array_index(array, i));
-	} else {
-		DEBUG("No Adapters property in manager properties");
+		if (adapter1)
+		{
+			char *adapter_name = (char *) key;
+			connect_adapter(adapter_name);
+		}
+
+		g_hash_table_destroy(object);
 	}
 
-	g_hash_table_destroy(props);
+	g_hash_table_destroy(managed_objects);
 }
 
 
@@ -1568,11 +1604,11 @@ int plugin_bluez_discover(const char *btaddr)
 		}
 
 		proxy = dbus_g_proxy_new_for_name(conn, "org.bluez",
-					dev->path, "org.bluez.Device");
+					dev->path, "org.bluez.Device1");
 	}
 
 	if (!proxy) {
-		ERROR("Can't get org.bluez.Device interface");
+		ERROR("Can't get org.bluez.Device1 interface");
 		goto finally;
 	}
 
