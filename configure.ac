@@ -50,13 +50,25 @@ if test "$enable_coverage" = "yes"; then
 	CFLAGS="$CFLAGS  -fprofile-arcs -ftest-coverage -lgcov -O0"
 fi
 
-#Enabling D-BUS network module
 PKG_CHECK_MODULES(DBUS, [dbus-1 >= 1.4.0])
+#Enabling D-BUS network module
 PKG_CHECK_MODULES(GLIB, glib-2.0)
 PKG_CHECK_MODULES(GIO, gio-2.0)
 PKG_CHECK_MODULES(DBUS_GLIB, dbus-glib-1)
 #usb libraries
 PKG_CHECK_MODULES(USB1, libusb-1.0)
+
+#bluez compilation options
+AC_ARG_ENABLE([bluez5], \ 
+	      [AC_HELP_STRING([--enable-bluez5], \
+	      [Enable BlueZ plugin support for BlueZ 5.0 onwards])],
+	      [enable_bluez5=${enableval}])
+
+AM_CONDITIONAL([BLUEZ_5], [test "${enable_bluez5}" = "yes"])
+AM_COND_IF([BLUEZ_5], \
+           [AC_MSG_NOTICE([ -- BlueZ 5 support enabled])], \
+	   [AC_MSG_NOTICE([ -- BlueZ 5 support disabled])])
+
 
 CFLAGS="$CFLAGS $CUNIT_CFLAGS -Isrc -g -pthread -Wall -Wextra -Wno-unused-parameter -Werror -fPIC"
 LIBS="$LIBS -lm $CUNIT_LIBS"
